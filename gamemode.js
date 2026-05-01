@@ -59,6 +59,7 @@ const prison = __importStar(__webpack_require__(239));
 const skills = __importStar(__webpack_require__(399));
 const training = __importStar(__webpack_require__(491));
 const chat = __importStar(__webpack_require__(809));
+const mpUtil_1 = __webpack_require__(56);
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function parseCommand(text) {
     if (!text || !text.startsWith('/'))
@@ -86,11 +87,53 @@ function checkPermission(store, playerId, level) {
 }
 // reply is assigned inside registerAll once we have the chat module.
 let reply = () => { };
+const CHAT_HELP = [
+    { name: 'me', usage: '/me [action]', description: 'Proximity roleplay action.', permission: 'player' },
+    { name: 'ooc', usage: '/ooc [message]', description: 'Global out-of-character chat.', permission: 'player' },
+    { name: 'w', usage: '/w [name] [message]', description: 'Nearby private whisper.', permission: 'player' },
+    { name: 'f', usage: '/f [message]', description: 'Faction chat.', permission: 'player' },
+];
+const COMMAND_HELP = [
+    { name: 'help', usage: '/help (command)', description: 'List commands or show one command.', permission: 'player' },
+    { name: 'lecture', usage: '/lecture start | join [name] | end', description: 'Manage college lectures.', permission: 'player' },
+    { name: 'study', usage: '/study [tomeBaseId]', description: 'Study a tome by base id.', permission: 'player' },
+    { name: 'train', usage: '/train start [skillId] | join [name] | end', description: 'Manage training sessions.', permission: 'player' },
+    { name: 'skill', usage: '/skill (skillId)', description: 'Show skill XP and level.', permission: 'player' },
+    { name: 'pay', usage: '/pay [amount] [playerName]', description: 'Transfer gold to another player.', permission: 'player' },
+    { name: 'property', usage: '/property list | request [id] | approve [id] | deny [id] | revoke [id]', description: 'Housing/property workflow.', permission: 'player' },
+    { name: 'bounty', usage: '/bounty | check [name] | add [name] [hold] [amount] | clear [name] [hold]', description: 'View or manage bounties.', permission: 'player' },
+    { name: 'arrest', usage: '/arrest [name]', description: 'Queue a player for sentencing.', permission: 'leader' },
+    { name: 'sentence', usage: '/sentence [name] fine [amount] | release | banish', description: 'Sentence a queued player.', permission: 'leader' },
+    { name: 'capture', usage: '/capture [name]', description: 'Take a downed player captive.', permission: 'player' },
+    { name: 'release', usage: '/release [name]', description: 'Release a captive player.', permission: 'player' },
+    { name: 'down', usage: '/down [name]', description: 'Force a player down.', permission: 'staff' },
+    { name: 'rise', usage: '/rise [name]', description: 'Raise a downed player.', permission: 'staff' },
+    { name: 'nvfl', usage: '/nvfl clear [name]', description: 'Clear NVFL state.', permission: 'staff' },
+    { name: 'faction', usage: '/faction assign|unassign|slots|join|leave|rank|bbb ...', description: 'Manage faction membership and BBB docs.', permission: 'leader' },
+    { name: 'sober', usage: '/sober [name]', description: 'Clear drunk state.', permission: 'staff' },
+    { name: 'feed', usage: '/feed [name] (levels)', description: 'Restore hunger levels.', permission: 'staff' },
+];
 // ── Command registration ──────────────────────────────────────────────────────
 function registerAll(mp, store, bus) {
     // Wire reply to the chat module so command responses appear in the UI.
     reply = (mp_, store_, playerId, message) => chat.sendToPlayer(mp_, store_, playerId, message);
     const handlers = {};
+    handlers['help'] = (userId, args) => {
+        const topic = (args[0] ?? '').replace(/^\//, '').toLowerCase();
+        const entries = [...CHAT_HELP, ...COMMAND_HELP];
+        if (topic) {
+            const entry = entries.find(item => item.name === topic);
+            if (!entry)
+                return reply(mp, store, userId, `Unknown help topic: /${topic}`);
+            reply(mp, store, userId, `${entry.usage}\n${entry.description}\nPermission: ${entry.permission}`);
+            return;
+        }
+        const lines = entries.map(entry => `${entry.usage} - ${entry.description}`);
+        reply(mp, store, userId, 'Commands. Use /help [command] for details.');
+        for (let i = 0; i < lines.length; i += 6) {
+            reply(mp, store, userId, lines.slice(i, i + 6).join('\n'));
+        }
+    };
     // ── College ──────────────────────────────────────────────────────────────
     handlers['lecture'] = (userId, args) => {
         if (!checkPermission(store, userId, 'player'))
@@ -404,6 +447,39 @@ function registerAll(mp, store, bus) {
             factions.joinFaction(mp, store, bus, target.id, factionId, rank);
             reply(mp, store, userId, `${target.name} set to rank ${rank} in ${factionId}.`);
         }
+        else if (sub === 'assign') {
+            if (!checkPermission(store, userId, 'leader'))
+                return reply(mp, store, userId, 'No permission.');
+            const target = findPlayer(store, args[1]);
+            const requirementId = args[2];
+            if (!target || !requirementId)
+                return reply(mp, store, userId, 'Usage: /faction assign [name] [slotId]');
+            _assignBackendFaction(mp, store, userId, target, requirementId);
+        }
+        else if (sub === 'unassign') {
+            if (!checkPermission(store, userId, 'leader'))
+                return reply(mp, store, userId, 'No permission.');
+            const target = findPlayer(store, args[1]);
+            const assignmentId = args[2];
+            if (!target || !assignmentId)
+                return reply(mp, store, userId, 'Usage: /faction unassign [name] [assignmentId]');
+            _removeBackendFaction(mp, store, userId, target, assignmentId);
+        }
+        else if (sub === 'slots') {
+            if (!checkPermission(store, userId, 'leader'))
+                return reply(mp, store, userId, 'No permission.');
+            const target = findPlayer(store, args[1]);
+            if (!target)
+                return reply(mp, store, userId, 'Usage: /faction slots [name]');
+            const access = (0, mpUtil_1.safeGet)(mp, target.actorId, 'private.frostfallAccess', {});
+            const assignments = Array.isArray(access.factions) ? access.factions : [];
+            if (!assignments.length)
+                return reply(mp, store, userId, `${target.name} has no backend faction slots.`);
+            reply(mp, store, userId, assignments.map((item) => {
+                const req = item.requirement || {};
+                return `${item.id}: ${req.group || item.requirementId} ${req.rank || ''}`.trim();
+            }).join('\n'));
+        }
         else if (sub === 'bbb') {
             if (args[1] === 'set') {
                 if (!checkPermission(store, userId, 'staff'))
@@ -419,7 +495,7 @@ function registerAll(mp, store, bus) {
             }
         }
         else {
-            reply(mp, store, userId, 'Usage: /faction join|leave|rank|bbb ...');
+            reply(mp, store, userId, 'Usage: /faction assign|unassign|slots|join|leave|rank|bbb ...');
         }
     };
     // ── Staff utilities ──────────────────────────────────────────────────────
@@ -479,6 +555,40 @@ function _findJarlForHold(store, holdId) {
     const candidates = store.getAll().filter(p => p.holdId === holdId && p.isLeader);
     return candidates.length ? candidates[0].id : null;
 }
+function _assignBackendFaction(mp, store, actorId, target, requirementId) {
+    if (!target.profileId)
+        return reply(mp, store, actorId, `${target.name} is missing a backend profile link.`);
+    if (typeof mp.assignBackendFaction !== 'function')
+        return reply(mp, store, actorId, 'Backend faction sync is unavailable.');
+    reply(mp, store, actorId, `Recording faction appointment for ${target.name}...`);
+    mp.assignBackendFaction(target.profileId, requirementId, target.name)
+        .then(payload => {
+        factions.refreshBackendMemberships(mp, store, target.id, payload);
+        reply(mp, store, actorId, `${target.name} assigned to ${requirementId}.`);
+        reply(mp, store, target.id, 'Your faction appointment has been recorded.');
+    })
+        .catch((err) => {
+        console.error(`[commands] Backend faction assignment failed: ${err.message}`);
+        reply(mp, store, actorId, `Backend faction assignment failed: ${err.message}`);
+    });
+}
+function _removeBackendFaction(mp, store, actorId, target, assignmentId) {
+    if (!target.profileId)
+        return reply(mp, store, actorId, `${target.name} is missing a backend profile link.`);
+    if (typeof mp.removeBackendFaction !== 'function')
+        return reply(mp, store, actorId, 'Backend faction sync is unavailable.');
+    reply(mp, store, actorId, `Recording faction removal for ${target.name}...`);
+    mp.removeBackendFaction(target.profileId, assignmentId)
+        .then(payload => {
+        factions.refreshBackendMemberships(mp, store, target.id, payload);
+        reply(mp, store, actorId, `${target.name} removed from backend slot ${assignmentId}.`);
+        reply(mp, store, target.id, 'Your faction appointment has been updated.');
+    })
+        .catch((err) => {
+        console.error(`[commands] Backend faction removal failed: ${err.message}`);
+        reply(mp, store, actorId, `Backend faction removal failed: ${err.message}`);
+    });
+}
 
 
 /***/ },
@@ -537,8 +647,21 @@ exports.bus = { on, off, dispatch };
 // Use these wrappers everywhere a module reads or writes a custom ff_* property
 // so that a not-yet-ready actor is silently skipped instead of erroring.
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.safeCall = safeCall;
 exports.safeGet = safeGet;
 exports.safeSet = safeSet;
+exports.safeGetActorName = safeGetActorName;
+exports.getUserDisplayName = getUserDisplayName;
+exports.safeSendCustomPacket = safeSendCustomPacket;
+function safeCall(fn, fallback) {
+    try {
+        const val = fn();
+        return val !== null && val !== undefined ? val : fallback;
+    }
+    catch {
+        return fallback;
+    }
+}
 function safeGet(mp, actorId, key, fallback) {
     if (!actorId)
         return fallback;
@@ -555,6 +678,26 @@ function safeSet(mp, actorId, key, value) {
         return false;
     try {
         mp.set(actorId, key, value);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function safeGetActorName(mp, actorId, fallback) {
+    return safeCall(() => mp.getActorName(actorId), fallback);
+}
+function getUserDisplayName(mp, userId, actorId) {
+    return safeGetActorName(mp, actorId, `User${userId}`);
+}
+function safeSendCustomPacket(mp, actorOrUserId, packetNameOrJson, data) {
+    try {
+        if (data === undefined) {
+            mp.sendCustomPacket(actorOrUserId, packetNameOrJson);
+        }
+        else {
+            mp.sendCustomPacket(actorOrUserId, packetNameOrJson, data);
+        }
         return true;
     }
     catch {
@@ -634,6 +777,8 @@ function defaultState(id, actorId, name) {
         id,
         actorId,
         name,
+        profileId: null,
+        discordId: null,
         holdId: null,
         factions: [],
         bounty: {},
@@ -770,6 +915,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.init = init;
 const store_1 = __webpack_require__(552);
 const bus_1 = __webpack_require__(503);
+const mpUtil_1 = __webpack_require__(56);
 const probeGlobals_1 = __webpack_require__(805);
 const chat = __importStar(__webpack_require__(809));
 const courier = __importStar(__webpack_require__(924));
@@ -786,6 +932,7 @@ const college = __importStar(__webpack_require__(316));
 const skills = __importStar(__webpack_require__(399));
 const training = __importStar(__webpack_require__(491));
 const commands = __importStar(__webpack_require__(592));
+const CHAT_BROWSER_EVENT = 'cef::chat:send';
 function init(mp) {
     console.log('[gamemode] Frostfall Roleplay — initializing');
     // ── Dev probe: set PROBE_GLOBALS=1 to check what SkyMP's Chakra exposes ───
@@ -814,6 +961,16 @@ function init(mp) {
     // ── Command layer ─────────────────────────────────────────────────────────
     const { handle: _handleCommand } = commands.registerAll(mp, store_1.store, bus_1.bus);
     handleCommand = _handleCommand;
+    const dispatchChatText = (userId, text) => {
+        const value = String(text || '').trim().slice(0, chat.MAX_MSG_LEN);
+        if (!value)
+            return;
+        if (value.startsWith('/'))
+            console.log(`[chat] command input from ${userId}: ${value}`);
+        if (!chat.handleChatInput(mp, store_1.store, userId, value)) {
+            handleCommand?.(userId, value);
+        }
+    };
     // ── Player lifecycle ──────────────────────────────────────────────────────
     mp.on('connect', (userId) => {
         const tryFinishConnect = (attempt = 0) => {
@@ -827,7 +984,7 @@ function init(mp) {
                     console.error(`[gamemode] connect error for ${userId}: actor never became ready (actorId=0)`);
                     return;
                 }
-                const name = mp.get(actorId, 'name') || `User${userId}`;
+                const name = (0, mpUtil_1.getUserDisplayName)(mp, userId, actorId);
                 // Prevent duplicate registration if the retry fires after they already got registered.
                 const existing = store_1.store.get(userId);
                 if (existing && existing.actorId) {
@@ -835,6 +992,10 @@ function init(mp) {
                     return;
                 }
                 store_1.store.register(userId, actorId, name);
+                store_1.store.update(userId, {
+                    profileId: (0, mpUtil_1.safeGet)(mp, actorId, 'private.frostfallProfileId', null),
+                    discordId: (0, mpUtil_1.safeGet)(mp, actorId, 'private.frostfallDiscordId', null),
+                });
                 console.log(`[gamemode] ${name} (${userId}) connected`);
                 // Restore per-system state in dependency order
                 hunger.onConnect(mp, store_1.store, bus_1.bus, userId);
@@ -846,6 +1007,9 @@ function init(mp) {
                 college.onConnect(mp, store_1.store, bus_1.bus, userId);
                 skills.onConnect(mp, store_1.store, bus_1.bus, userId);
                 courier.onConnect(mp, store_1.store, bus_1.bus, userId);
+                // Trigger the chat property so updateOwner fires and the client browser
+                // mounts the chat widget.
+                chat.initClientChat(mp, actorId);
             }
             catch (err) {
                 console.error(`[gamemode] connect error for ${userId}: ${err.message}`);
@@ -866,21 +1030,15 @@ function init(mp) {
         }
     });
     // ── Chat input from the browser ───────────────────────────────────────────
-    // window.mp.send('cef::chat:send', text) in the browser widget sends a
-    // customPacket with JSON body { type: 'cef::chat:send', data: text }.
-    // handleChatInput handles __reload__, all channels (/me /ooc /w /f), proximity,
-    // history, and returns false only for unknown /commands so we can route them.
+    // The skymp5-front Chat widget calls window.mp.send('cef::chat:send', text),
+    // which App.js routes to window.skyrimPlatform.sendMessage, and the SkyMP
+    // client forwards as a customPacket { type, data } to the server.
     mp.on('customPacket', (userId, content) => {
         try {
             const packet = JSON.parse(content);
-            if (packet.type !== 'cef::chat:send')
+            if (packet.type !== CHAT_BROWSER_EVENT)
                 return;
-            const text = String(packet.data || '').trim().slice(0, chat.MAX_MSG_LEN);
-            if (!text)
-                return;
-            if (!chat.handleChatInput(mp, store_1.store, userId, text)) {
-                handleCommand?.(userId, text);
-            }
+            dispatchChatText(userId, packet.data);
         }
         catch (err) {
             console.error(`[chat] customPacket error: ${err.message}`);
@@ -897,7 +1055,7 @@ init(globalThis.mp);
 /***/ },
 
 /***/ 800
-(__unused_webpack_module, exports) {
+(__unused_webpack_module, exports, __webpack_require__) {
 
 
 // ── Captivity ─────────────────────────────────────────────────────────────────
@@ -908,6 +1066,7 @@ exports.capturePlayer = capturePlayer;
 exports.releasePlayer = releasePlayer;
 exports.checkExpiredCaptivity = checkExpiredCaptivity;
 exports.init = init;
+const mpUtil_1 = __webpack_require__(56);
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MAX_CAPTIVITY_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CHECK_INTERVAL_MS = 60 * 1000;
@@ -931,9 +1090,9 @@ function capturePlayer(mp, store, bus, captiveId, captorId) {
         return;
     const now = Date.now();
     store.update(captiveId, { isCaptive: true, captiveAt: now });
-    mp.sendCustomPacket(captive.actorId, 'playerCaptured', { remainingMs: MAX_CAPTIVITY_MS });
+    (0, mpUtil_1.safeSendCustomPacket)(mp, captive.actorId, 'playerCaptured', { remainingMs: MAX_CAPTIVITY_MS });
     if (captor)
-        mp.sendCustomPacket(captor.actorId, 'playerCaptured', { captiveId });
+        (0, mpUtil_1.safeSendCustomPacket)(mp, captor.actorId, 'playerCaptured', { captiveId });
     bus.dispatch({ type: 'playerCaptured', captiveId, captorId });
 }
 function releasePlayer(mp, store, bus, captiveId) {
@@ -941,7 +1100,7 @@ function releasePlayer(mp, store, bus, captiveId) {
     if (!captive)
         return;
     store.update(captiveId, { isCaptive: false, captiveAt: null });
-    mp.sendCustomPacket(captive.actorId, 'playerReleased', {});
+    (0, mpUtil_1.safeSendCustomPacket)(mp, captive.actorId, 'playerReleased', {});
     bus.dispatch({ type: 'playerReleased', captiveId });
 }
 function checkExpiredCaptivity(mp, store, bus, now) {
@@ -979,7 +1138,7 @@ function init(mp, store, bus) {
 /***/ },
 
 /***/ 421
-(__unused_webpack_module, exports) {
+(__unused_webpack_module, exports, __webpack_require__) {
 
 
 // ── Combat ────────────────────────────────────────────────────────────────────
@@ -988,6 +1147,7 @@ exports.isDowned = isDowned;
 exports.downPlayer = downPlayer;
 exports.risePlayer = risePlayer;
 exports.init = init;
+const mpUtil_1 = __webpack_require__(56);
 // ── Constants ─────────────────────────────────────────────────────────────────
 const LOOT_CAP_GOLD = 500;
 const LOOT_CAP_ITEMS = 3;
@@ -1004,9 +1164,9 @@ function downPlayer(mp, store, bus, victimId, attackerId) {
         return;
     store.update(victimId, { isDown: true, downedAt: Date.now() });
     const lootInfo = { lootCapGold: LOOT_CAP_GOLD, lootCapItems: LOOT_CAP_ITEMS };
-    mp.sendCustomPacket(victim.actorId, 'playerDowned', lootInfo);
+    (0, mpUtil_1.safeSendCustomPacket)(mp, victim.actorId, 'playerDowned', lootInfo);
     if (attacker)
-        mp.sendCustomPacket(attacker.actorId, 'playerDowned', lootInfo);
+        (0, mpUtil_1.safeSendCustomPacket)(mp, attacker.actorId, 'playerDowned', lootInfo);
     bus.dispatch({
         type: 'playerDowned',
         victimId,
@@ -1020,7 +1180,7 @@ function risePlayer(mp, store, bus, playerId) {
         return;
     // Preserve downedAt for NVFL — only clear isDown
     store.update(playerId, { isDown: false });
-    mp.sendCustomPacket(player.actorId, 'playerRisen', {});
+    (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'playerRisen', {});
     bus.dispatch({ type: 'playerRisen', playerId });
 }
 // ── Init ─────────────────────────────────────────────────────────────────────
@@ -1087,13 +1247,12 @@ function clearNvfl(store, playerId) {
 //   /f             faction members only
 //
 // Server → Client flow
-//   deliver() → mp.set(actorId, 'chatMsg', '#{rrggbb}text…') → updateOwner
+//   deliver() → mp.set(actorId, 'ff_chatMsg', '#{rrggbb}text…') → updateOwner
 //   → executeJavaScript → parses #{color} codes → widgets.set → React re-render
 //
 // Client → Server flow
-//   Chat input → window.mp.send('cef::chat:send', text) → BrowserMessage
-//   → BrowserService forwards allowed browser messages as CustomPacket
-//   → mp.on('customPacket', …) → handleChatInput()
+//   Chat input → window.skyrimPlatform.sendMessage('chatSend', text) → BrowserMessage
+//   → makeEventSource browserMessage listener → mp._onChatSend → handleChatInput()
 //
 // Public API (same as original chat.ts — no gamemode changes needed)
 //   init(mp)
@@ -1110,6 +1269,7 @@ function clearNvfl(store, playerId) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.MAX_MSG_LEN = void 0;
 exports.registerChannel = registerChannel;
+exports.initClientChat = initClientChat;
 exports.init = init;
 exports.handleChatInput = handleChatInput;
 exports.sendSystem = sendSystem;
@@ -1117,8 +1277,9 @@ exports.broadcastSystem = broadcastSystem;
 exports.sendToPlayer = sendToPlayer;
 exports.broadcast = broadcast;
 const signHelper_1 = __webpack_require__(720);
+const mpUtil_1 = __webpack_require__(56);
 // ── Config ────────────────────────────────────────────────────────────────────
-const CHAT_MSG_PROP = 'chatMsg';
+const CHAT_MSG_PROP = 'ff_chatMsg';
 const SAY_RANGE = 3500; // Skyrim units ≈ 50 m
 const WHISPER_RANGE = 400; // units ≈ 6 m
 exports.MAX_MSG_LEN = 300;
@@ -1127,27 +1288,78 @@ const RATE_LIMIT_MS = 1000;
 // ── Client-side bridge ────────────────────────────────────────────────────────
 //
 // updateOwner runs in the Skyrim Platform Chakra context (ES5-safe) whenever
-// the server sets a new value on 'chatMsg'.
+// the server sets a new value on 'ff_chatMsg'.
 //
 // Message wire format: "#{rrggbb}segment1#{rrggbb}segment2…"
 // The browser-side code parses #{color} codes into Span segments and pushes a
 // new ChatMsg into window.chatMessages, then refreshes the widgets array so
 // the React chat component re-renders.
+// updateOwner fires on every game tick (not just on property change), so we
+// use ctx.state to guard against re-delivering the same value each frame.
+// When the property is reset to '' (the clear-before-send pattern in deliver()),
+// we wipe the guard so the same payload can be shown again if re-sent.
+// The send function injected into the chat widget.
+// window.mp.send is wired by App.js componentDidMount → skyrimPlatform.sendMessage,
+// which the SkyMP client forwards to the server as a customPacket {type, data}.
+// MUST use only single quotes — this string is embedded inside Chakra double-quoted string pieces.
+const CHAT_SEND_JS = "function(t){if(window.mp&&typeof window.mp.send==='function')window.mp.send('cef::chat:send',t);}";
+// Parses '#{rrggbb}text#{rrggbb}text…' into a ChatMsg compatible with the
+// skymp5-front Chat component.  Split on '#{' — first piece may be unstyled
+// text, subsequent pieces start with 'rrggbb}' then the text body.
+// MUST use only single quotes — same embedding constraint as CHAT_SEND_JS.
+const PARSE_MSG_JS = "var parts=raw.split('#{');" +
+    "var segs=[];var col='#fafafa';" +
+    "for(var i=0;i<parts.length;i++){" +
+    "var p=parts[i];" +
+    "if(i===0){if(p)segs.push({text:p,color:col,opacity:1,type:['default']});continue;}" +
+    "var ci=p.indexOf('}');" +
+    "if(ci===6){col='#'+p.slice(0,6);var txt=p.slice(7);if(txt)segs.push({text:txt,color:col,opacity:1,type:['default']});}" +
+    "else{segs.push({text:'#{'+p,color:col,opacity:1,type:['default']});}" +
+    "}";
 const UPDATE_OWNER_JS = `
 (function(){
-  var rawMsg=String(ctx.value||"");
-  if(!rawMsg)return;
-  var safeMsg=JSON.stringify(rawMsg);
   ctx.sp.browser.executeJavaScript(
     "(function(){"+
     "  try{"+
-    "    if(window.skympChat&&typeof window.skympChat.addMessage==='function'){"+
-    "      window.skympChat.addMessage("+safeMsg+");"+
-    "    }else{"+
-    "      console.error('[chat] window.skympChat.addMessage is not available');"+
-    "    }"+
-    "  }catch(e){console.error('[chat] Failed to render message',e&&e.stack?e.stack:e);}"+
+    "    if(!window.chatMessages)window.chatMessages=[];"+
+    "    if(!window.skyrimPlatform||!window.skyrimPlatform.widgets)return;"+
+    "    var ws=window.skyrimPlatform.widgets.get();"+
+    "    if(ws.some(function(w){return w.type==='chat';}))return;"+
+    "    var sf=${CHAT_SEND_JS};"+
+    "    window.skyrimPlatform.widgets.set(ws.concat([{type:'chat',messages:window.chatMessages.slice(),send:sf}]));"+
+    "  }catch(e){}"+
     "})();"
+  );
+  var rawMsg=String(ctx.value||'');
+  if(!rawMsg){ctx.state._chatLastMsg='';return;}
+  if(ctx.state._chatLastMsg===rawMsg)return;
+  ctx.state._chatLastMsg=rawMsg;
+  var safeMsg=JSON.stringify(rawMsg);
+  ctx.sp.browser.executeJavaScript(
+    '(function(){'+
+    '  try{'+
+    '    var raw='+safeMsg+';'+
+    '    ${PARSE_MSG_JS}'+
+    '    if(!segs.length)return;'+
+    '    if(!window.chatMessages)window.chatMessages=[];'+
+    '    window.chatMessages.push({text:segs,category:\'plain\',opacity:1});'+
+    '    if(window.chatMessages.length>50)window.chatMessages.shift();'+
+    '    if(!window.skyrimPlatform||!window.skyrimPlatform.widgets)return;'+
+    '    var ws=window.skyrimPlatform.widgets.get();'+
+    '    var found=false;'+
+    '    var next=ws.map(function(w){'+
+    '      if(w.type!==\'chat\')return w;'+
+    '      found=true;'+
+    '      return Object.assign({},w,{messages:window.chatMessages.slice()});'+
+    '    });'+
+    '    if(!found){'+
+    '      var sf=${CHAT_SEND_JS};'+
+    '      next=ws.concat([{type:\'chat\',messages:window.chatMessages.slice(),send:sf}]);'+
+    '    }'+
+    '    window.skyrimPlatform.widgets.set(next);'+
+    '    if(typeof window.scrollToLastMessage===\'function\')window.scrollToLastMessage();'+
+    '  }catch(e){}'+
+    '})();'
   );
 })();
 `.trim();
@@ -1219,11 +1431,10 @@ function replayHistory(mp, store, userId) {
 function deliver(mp, actorId, m) {
     if (!actorId)
         return;
-    try {
-        mp.set(actorId, CHAT_MSG_PROP, spansToColorString(m.text));
-    }
-    catch (err) {
-        console.error(`[chat] failed to deliver to actor ${actorId}: ${err?.message ?? String(err)}`);
+    const payload = spansToColorString(m.text);
+    (0, mpUtil_1.safeSet)(mp, actorId, CHAT_MSG_PROP, '');
+    if (!(0, mpUtil_1.safeSet)(mp, actorId, CHAT_MSG_PROP, payload)) {
+        console.error(`[chat] failed to deliver to actor ${actorId}`);
     }
 }
 // ── Proximity helper ──────────────────────────────────────────────────────────
@@ -1233,15 +1444,25 @@ function dist3(a, b) {
     return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
 }
 function sendProximity(mp, store, senderActorId, m, range) {
-    const origin = mp.getActorPos(senderActorId);
+    const origin = (0, mpUtil_1.safeCall)(() => mp.getActorPos(senderActorId), null);
     for (const p of store.getAll()) {
-        if (dist3(origin, mp.getActorPos(p.actorId)) <= range) {
+        if (p.actorId === senderActorId) {
+            deliver(mp, p.actorId, m);
+            pushHistory(p.id, m);
+            continue;
+        }
+        const targetPos = (0, mpUtil_1.safeCall)(() => mp.getActorPos(p.actorId), null);
+        if (dist3(origin, targetPos) <= range) {
             deliver(mp, p.actorId, m);
             pushHistory(p.id, m);
         }
     }
 }
 // ── init ──────────────────────────────────────────────────────────────────────
+/** Call once after an actor becomes ready to ensure updateOwner fires. */
+function initClientChat(mp, actorId) {
+    (0, mpUtil_1.safeSet)(mp, actorId, CHAT_MSG_PROP, '');
+}
 function init(mp) {
     mp.makeProperty(CHAT_MSG_PROP, {
         isVisibleByOwner: true,
@@ -1315,7 +1536,7 @@ function handleChatInput(mp, store, userId, text) {
             deliver(mp, player.actorId, notFound);
             return true;
         }
-        const d = dist3(mp.getActorPos(player.actorId), mp.getActorPos(target.actorId));
+        const d = dist3((0, mpUtil_1.safeCall)(() => mp.getActorPos(player.actorId), null), (0, mpUtil_1.safeCall)(() => mp.getActorPos(target.actorId), null));
         if (d > WHISPER_RANGE) {
             const tooFar = mkMsg('plain', sp('[Whisper] ', C.tagWhisper, ['nonrp']), sp('Too far away to whisper.', C.system, ['nonrp', 'text']));
             deliver(mp, player.actorId, tooFar);
@@ -1460,7 +1681,7 @@ function sendNotification(mp, store, notification) {
     const pruned = filterExpired(existing);
     pruned.push(notification);
     (0, mpUtil_1.safeSet)(mp, recipient.actorId, 'ff_courier', pruned);
-    mp.sendCustomPacket(recipient.actorId, 'courierNotification', notification);
+    (0, mpUtil_1.safeSendCustomPacket)(mp, recipient.actorId, 'courierNotification', notification);
 }
 function markRead(mp, store, playerId, notificationId) {
     const player = store.get(playerId);
@@ -1498,7 +1719,7 @@ function onConnect(mp, store, bus, userId) {
     const notes = (0, mpUtil_1.safeGet)(mp, player.actorId, 'ff_courier', []);
     const pending = getUnread(filterExpired(notes));
     for (const n of pending) {
-        mp.sendCustomPacket(player.actorId, 'courierNotification', n);
+        (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'courierNotification', n);
     }
 }
 
@@ -1546,8 +1767,8 @@ function transferGold(mp, store, fromId, toId, amount) {
     store.update(fromId, { septims: fromGold });
     store.update(toId, { septims: toGold });
     // Sync to inventory gold
-    (0, mpUtil_1.safeSet)(mp, from.actorId, 'inv', _setGoldInInventory((0, mpUtil_1.safeGet)(mp, from.actorId, 'inv', null), fromGold));
-    (0, mpUtil_1.safeSet)(mp, to.actorId, 'inv', _setGoldInInventory((0, mpUtil_1.safeGet)(mp, to.actorId, 'inv', null), toGold));
+    (0, mpUtil_1.safeSet)(mp, from.actorId, 'inventory', _setGoldInInventory((0, mpUtil_1.safeGet)(mp, from.actorId, 'inventory', null), fromGold));
+    (0, mpUtil_1.safeSet)(mp, to.actorId, 'inventory', _setGoldInInventory((0, mpUtil_1.safeGet)(mp, to.actorId, 'inventory', null), toGold));
     return true;
 }
 // ── Internal ──────────────────────────────────────────────────────────────────
@@ -1567,6 +1788,12 @@ function _setGoldInInventory(inv, amount) {
 // ── Init ─────────────────────────────────────────────────────────────────────
 function init(mp, store, bus) {
     console.log('[economy] Initializing');
+    mp.makeProperty('ff_stipendHours', {
+        isVisibleByOwner: true,
+        isVisibleByNeighbors: false,
+        updateOwner: '',
+        updateNeighbor: '',
+    });
     const scheduleTick = () => {
         setTimeout(() => {
             try {
@@ -1575,8 +1802,8 @@ function init(mp, store, bus) {
                         const newSeptims = player.septims + STIPEND_RATE;
                         const newHours = player.stipendPaidHours + 1;
                         store.update(player.id, { septims: newSeptims, stipendPaidHours: newHours });
-                        const inv = (0, mpUtil_1.safeGet)(mp, player.actorId, 'inv', null);
-                        (0, mpUtil_1.safeSet)(mp, player.actorId, 'inv', _setGoldInInventory(inv, newSeptims));
+                        const inv = (0, mpUtil_1.safeGet)(mp, player.actorId, 'inventory', null);
+                        (0, mpUtil_1.safeSet)(mp, player.actorId, 'inventory', _setGoldInInventory(inv, newSeptims));
                         (0, mpUtil_1.safeSet)(mp, player.actorId, 'ff_stipendHours', newHours);
                         bus.dispatch({ type: 'stipendTick', playerId: player.id, septims: newSeptims, stipendPaidHours: newHours });
                     }
@@ -1595,7 +1822,7 @@ function onConnect(mp, store, bus, userId) {
     const player = store.get(userId);
     if (!player)
         return;
-    const inv = (0, mpUtil_1.safeGet)(mp, player.actorId, 'inv', null);
+    const inv = (0, mpUtil_1.safeGet)(mp, player.actorId, 'inventory', null);
     const gold = _getGoldFromInventory(inv);
     store.update(userId, { septims: gold });
     const hours = (0, mpUtil_1.safeGet)(mp, player.actorId, 'ff_stipendHours', 0);
@@ -1809,7 +2036,7 @@ function onConnect(mp, store, bus, userId) {
         return;
     const xp = (0, mpUtil_1.safeGet)(mp, player.actorId, 'ff_study_xp', 0);
     const rank = getCollegeRank(xp);
-    mp.sendCustomPacket(player.actorId, 'collegeSync', { xp, rank });
+    (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'collegeSync', { xp, rank });
 }
 
 
@@ -2009,7 +2236,7 @@ function onConnect(mp, store, bus, userId) {
     if (!player || !player.actorId)
         return;
     const xpMap = (0, mpUtil_1.safeGet)(mp, player.actorId, 'ff_skill_xp', {});
-    mp.sendCustomPacket(player.actorId, 'skillsSync', { xpMap });
+    (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'skillsSync', { xpMap });
 }
 
 
@@ -2060,6 +2287,7 @@ exports.joinTraining = joinTraining;
 exports.endTraining = endTraining;
 exports.init = init;
 const skills = __importStar(__webpack_require__(399));
+const mpUtil_1 = __webpack_require__(56);
 // ── Constants ─────────────────────────────────────────────────────────────────
 const TRAINING_BOOST_MULTIPLIER = 2.0;
 const TRAINING_BOOST_ONLINE_MS = 24 * 60 * 60 * 1000; // 24h of online time
@@ -2114,7 +2342,7 @@ function endTraining(mp, store, bus, trainerId) {
         skills.grantStudyBoost(mp, attendeeId, session.skillId, TRAINING_BOOST_MULTIPLIER, TRAINING_BOOST_ONLINE_MS);
         const attendee = store.get(attendeeId);
         if (attendee)
-            mp.sendCustomPacket(attendee.actorId, 'trainingBoostGranted', { skillId: session.skillId });
+            (0, mpUtil_1.safeSendCustomPacket)(mp, attendee.actorId, 'trainingBoostGranted', { skillId: session.skillId });
     }
     sessions.delete(trainerId);
     bus.dispatch({ type: 'trainingEnded', trainerId, skillId: session.skillId, attendeeCount: session.attendees.size });
@@ -2228,7 +2456,7 @@ function sentencePlayer(mp, store, bus, playerId, jarlId, sentence) {
         if (player) {
             const newBounty = Object.assign({}, player.bounty, { [holdId]: 0 });
             store.update(playerId, { bounty: newBounty });
-            mp.sendCustomPacket(player.actorId, 'playerBanished', { holdId });
+            (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'playerBanished', { holdId });
         }
     }
     bus.dispatch({ type: 'playerSentenced', playerId, jarlId, holdId, sentence });
@@ -2293,7 +2521,7 @@ function addBounty(mp, store, bus, playerId, holdId, amount) {
     store.update(playerId, { bounty: newBounty });
     _persist(mp, player.actorId, newBounty);
     if (player.actorId)
-        mp.sendCustomPacket(player.actorId, 'bountyChanged', { holdId, amount: newAmount });
+        (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'bountyChanged', { holdId, amount: newAmount });
     bus.dispatch({ type: 'bountyChanged', playerId, holdId, newAmount, delta: amount });
 }
 function clearBounty(mp, store, bus, playerId, holdId) {
@@ -2304,7 +2532,7 @@ function clearBounty(mp, store, bus, playerId, holdId) {
     store.update(playerId, { bounty: newBounty });
     _persist(mp, player.actorId, newBounty);
     if (player.actorId)
-        mp.sendCustomPacket(player.actorId, 'bountyChanged', { holdId, amount: 0 });
+        (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'bountyChanged', { holdId, amount: 0 });
     bus.dispatch({ type: 'bountyChanged', playerId, holdId, newAmount: 0, delta: -(player.bounty[holdId] ?? 0) });
 }
 // ── Internal ──────────────────────────────────────────────────────────────────
@@ -2317,6 +2545,12 @@ function _persist(mp, actorId, bountyMap) {
 // ── Init ─────────────────────────────────────────────────────────────────────
 function init(mp, store, bus) {
     console.log('[bounty] Initializing');
+    mp.makeProperty('ff_bounty', {
+        isVisibleByOwner: true,
+        isVisibleByNeighbors: false,
+        updateOwner: '',
+        updateNeighbor: '',
+    });
     console.log('[bounty] Started');
 }
 function onConnect(mp, store, bus, userId) {
@@ -2379,6 +2613,7 @@ exports.leaveFaction = leaveFaction;
 exports.isFactionMember = isFactionMember;
 exports.getPlayerFactionRank = getPlayerFactionRank;
 exports.getPlayerMemberships = getPlayerMemberships;
+exports.refreshBackendMemberships = refreshBackendMemberships;
 exports.init = init;
 exports.onConnect = onConnect;
 const worldStore = __importStar(__webpack_require__(100));
@@ -2444,6 +2679,16 @@ function getPlayerMemberships(mp, store, playerId) {
         return [];
     return _getMemberships(mp, player.actorId);
 }
+function refreshBackendMemberships(mp, store, playerId, accessPayload) {
+    const player = store.get(playerId);
+    if (!player)
+        return [];
+    (0, mpUtil_1.safeSet)(mp, player.actorId, 'private.frostfallAccess', accessPayload || { permissions: [], gameFactions: [], factions: [] });
+    const memberships = _syncBackendMemberships(mp, player.actorId);
+    store.update(playerId, { factions: memberships.map(m => m.factionId) });
+    (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'factionsSync', { memberships });
+    return memberships;
+}
 // ── Internal ──────────────────────────────────────────────────────────────────
 function _getMemberships(mp, actorId) {
     return (0, mpUtil_1.safeGet)(mp, actorId, 'ff_memberships', []);
@@ -2454,21 +2699,53 @@ function _saveMemberships(mp, actorId, memberships) {
 // ── Init ─────────────────────────────────────────────────────────────────────
 function init(mp, store, bus) {
     console.log('[factions] Initializing');
+    mp.makeProperty('ff_memberships', {
+        isVisibleByOwner: true,
+        isVisibleByNeighbors: false,
+        updateOwner: '',
+        updateNeighbor: '',
+    });
     console.log('[factions] Started');
 }
 function onConnect(mp, store, bus, userId) {
     const player = store.get(userId);
     if (!player || !player.actorId)
         return;
-    const memberships = _getMemberships(mp, player.actorId);
+    const memberships = _syncBackendMemberships(mp, player.actorId);
     const factionIds = memberships.map(m => m.factionId);
     store.update(userId, { factions: factionIds });
     // 3-arg sendCustomPacket is an undeclared native extension — guard so a missing
     // implementation doesn't abort the rest of the onConnect chain.
-    try {
-        mp.sendCustomPacket(player.actorId, 'factionsSync', { memberships });
+    (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'factionsSync', { memberships });
+}
+function _syncBackendMemberships(mp, actorId) {
+    const current = _getMemberships(mp, actorId);
+    const access = (0, mpUtil_1.safeGet)(mp, actorId, 'private.frostfallAccess', null);
+    const backendFactions = Array.isArray(access?.gameFactions) ? access.gameFactions : [];
+    if (!backendFactions.length) {
+        const localOnly = current.filter(m => m.source !== 'backend');
+        if (localOnly.length !== current.length)
+            _saveMemberships(mp, actorId, localOnly);
+        return localOnly;
     }
-    catch { /* noop */ }
+    const now = Date.now();
+    const backend = backendFactions
+        .filter((item) => typeof item?.factionId === 'string' && item.factionId)
+        .map((item) => ({
+        factionId: item.factionId,
+        rank: Number.isFinite(Number(item.rank)) ? Number(item.rank) : 0,
+        joinedAt: now,
+        source: 'backend',
+        title: typeof item.title === 'string' ? item.title : undefined,
+        permission: typeof item.permission === 'string' ? item.permission : undefined,
+        scope: typeof item.scope === 'string' ? item.scope : undefined,
+        group: typeof item.group === 'string' ? item.group : undefined,
+    }));
+    const backendIds = new Set(backend.map((m) => m.factionId));
+    const local = current.filter(m => m.source !== 'backend' && !backendIds.has(m.factionId));
+    const next = [...local, ...backend];
+    _saveMemberships(mp, actorId, next);
+    return next;
 }
 
 
@@ -2525,6 +2802,7 @@ exports.init = init;
 exports.onConnect = onConnect;
 const worldStore = __importStar(__webpack_require__(100));
 const courier = __importStar(__webpack_require__(924));
+const mpUtil_1 = __webpack_require__(56);
 // ── Property Registry ─────────────────────────────────────────────────────────
 // 16 properties across 9 holds. propertyId is the stable key used everywhere.
 const PROPERTY_REGISTRY = [
@@ -2611,7 +2889,7 @@ function approveProperty(mp, store, bus, propertyId, approverId) {
     if (player) {
         const owned = store.get(newOwnerId).properties.concat([propertyId]);
         store.update(newOwnerId, { properties: owned });
-        mp.sendCustomPacket(player.actorId, 'propertyApproved', { propertyId });
+        (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'propertyApproved', { propertyId });
     }
     bus.dispatch({ type: 'propertyApproved', propertyId, newOwnerId, approvedBy: approverId });
     return true;
@@ -2676,10 +2954,7 @@ function onConnect(mp, store, bus, userId) {
     const list = player.holdId ? getPropertiesByHold(player.holdId) : [];
     // 3-arg sendCustomPacket is an undeclared native extension — guard so a missing
     // implementation doesn't abort the rest of the onConnect chain.
-    try {
-        mp.sendCustomPacket(player.actorId, 'propertyList', { properties: list });
-    }
-    catch { /* noop */ }
+    (0, mpUtil_1.safeSendCustomPacket)(mp, player.actorId, 'propertyList', { properties: list });
 }
 
 
