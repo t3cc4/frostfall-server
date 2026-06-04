@@ -2,11 +2,11 @@
   "dataDir" : "data",
   "loadOrder" : 
   [
-    "C:/GOG Games/Skyrim Special Edition/Data/Skyrim.esm",
-    "C:/GOG Games/Skyrim Special Edition/Data/Update.esm",
-    "C:/GOG Games/Skyrim Special Edition/Data/Dawnguard.esm",
-    "C:/GOG Games/Skyrim Special Edition/Data/HearthFires.esm",
-    "C:/GOG Games/Skyrim Special Edition/Data/Dragonborn.esm"
+    "C:/GOG Games/Skyrim Anniversary Edition/Data/Skyrim.esm",
+    "C:/GOG Games/Skyrim Anniversary Edition/Data/Update.esm",
+    "C:/GOG Games/Skyrim Anniversary Edition/Data/Dawnguard.esm",
+    "C:/GOG Games/Skyrim Anniversary Edition/Data/HearthFires.esm",
+    "C:/GOG Games/Skyrim Anniversary Edition/Data/Dragonborn.esm"
   ],
   "master" : "",
   "maxPlayers" : 1200,
